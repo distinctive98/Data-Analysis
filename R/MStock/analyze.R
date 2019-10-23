@@ -3,9 +3,10 @@ library(stringr)
 library(XML)
 library(KoNLP)
 library(dplyr) #filter
+library(wordcloud2)
 
 #setwd
-setwd('C:/Users/student/Desktop/MStock_R')
+setwd('C:/Users/student/Desktop/Data-Analysis/R/MStock')
 getwd()
 
 #종목 이름과 코드
@@ -13,7 +14,7 @@ company <- c('삼성SDI','현대모비스','SK하이닉스','NAVER','LG전자','
 code <- c('006400','012330','000660','035420','066570','068270','090430','004170','055550','035720','010950','161890')
 
 #필터링 단어 모음
-filterWords <- c('삼성','SDI','현대','모비스','SK','하이닉스','네이버'
+filterWords <- c('삼성','SDI','삼성SDI','현대','모비스','SK','하이닉스','네이버'
                   ,'LG','전자','셀트리온','아모레퍼시픽','신세계','KT'
                   ,'카카오','에스','오일','한국콜마','콜마','한국','오전'
                   ,'오후','올해','지난해','내일','모레','어제','오늘'
@@ -21,12 +22,6 @@ filterWords <- c('삼성','SDI','현대','모비스','SK','하이닉스','네이
                   ,'뉴스','때문','현대모비스','케이','엘지','NAVER','naver'
                   ,'만원','에쓰오일','신한','은행','신한은행'
                   ,'co','kr','com','www','https','http','hani','기자','연합뉴스')
-
-#감정 사전                  
-positive <- readLines('positive.txt')
-negative <- readLines('negative.txt')
-#head(positive)
-#head(negative)
 
 newsList <- c()
 
@@ -95,14 +90,129 @@ for(i in 1:5){
   newsList <- c(newsList, h_text)
 }
 
-#2차 정제 for 워드클라우드
+#2차 정제
+#기사별 단어 리스트화
 textData <- sapply(newsList, extractNoun, USE.NAMES = F)
-textData <- Filter(function(x){2 <= nchar(x) & nchar(x) <= 6}, unlist(textData))
-textData_df <- data.frame(textData)
-head(textData_df)
-textData_df <- textData_df %>% filter(!textData %in% filterWords)
 
-#2차 정제 for 감정분석
+#워드클라우드
+textData_wc <- Filter(function(x){2 <= nchar(x) & nchar(x) <= 6}, unlist(textData))
+textData_wc_df <- data.frame(sort(table(textData_wc), decreasing = T))
+textData_wd_df <- textData_wc_df %>% filter(!textData %in% filterWords)
+head(textData_wd_df)
+textCloud <- wordcloud2(textData_wd_df[1:100,])
+
+#감정분석
+textList <- list()
+for(i in 1:15){
+  textList[[i]] <- Filter(function(x){2 <= nchar(x) & nchar(x) <= 6}, textData[[i]])
+  textList[[i]] <- data.frame(sort(table(textList[[i]]), decreasing = T))
+  names(textList[[i]])[1] <- 'textData'
+  textList[[i]] <- textList[[i]] %>% filter(!textData %in% filterWords)
+}
+
+#감정사전                  
+positive <- readLines('positive.txt')
+negative <- readLines('negative.txt')
+
+#긍정, 부정 단어
+text_pos <- textList
+text_neg <- textList
+
+#기사마다 긍정, 부정필터 적용
+#긍/부정 단어별 Freq 개수 기반으로 문서에 대한 긍/부정 판단
+emotion <- c()
+for(i in  1:15){
+  text_pos[[i]] <- text_pos[[i]] %>% filter(textData %in% positive)
+  text_neg[[i]] <- text_neg[[i]] %>% filter(textData %in% negative)
+  pos <- if(length(text_pos[[i]][,1]) > 0) sum(text_pos[[i]][2]) else 0
+  neg <- if(length(text_neg[[i]][,1]) > 0) sum(text_neg[[i]][2]) else 0
+  emotion[i] <- if(pos > neg) 'pos' else 'neg'
+}
+
+#단어테이블 생성
+table_em <- Filter(function(x){2 <= nchar(x) & nchar(x) <= 6}, unlist(textData))
+table_em <- data.frame(table(table_em))[1]
+table_em <- table_em %>% filter(!table_em %in% filterWords) %>% filter(table_em %in% positive | table_em %in% negative)
+names(table_em) <- c('word')
+head(table_em)
+
+#긍/부정테이블 * 단어테이블
+col_cnt <- 2 #col count
+for(i in  1:15){
+  text_em <- data.frame()
+  text_em <- rbind(text_pos[[i]], text_neg[[i]])[1]
+  if(length(text_em[,1]) > 0){
+    names(text_em) <- c('word')
+  
+    temp_df <- c()
+    for(word in table_em$word){
+      if(any(word == text_em)){
+        #print(TRUE)
+        temp_df <- c(temp_df,1)
+      } else {
+        #print(FALSE)
+        temp_df <- c(temp_df,0)
+      }
+    }
+    temp_df <- data.frame(temp_df)
+    table_em <- cbind(table_em,temp_df)
+    names(table_em)[col_cnt] <- paste0('d',col_cnt-1)
+    col_cnt <- col_cnt + 1
+  }
+}
+
+#TF-IDF 구하기
+tf_idf <- data.frame()
+#TF : 문서 내 단어의 개수/문서 내 모든 단어의 개수
+tf <- c()
+tf_bot_df <- data.frame(Filter(function(x){2 <= nchar(x) & nchar(x) <= 6}, unlist(textData)))
+names(tf_bot_df)[1] <- 'word'
+tf_bot_df <- tf_bot_df %>% filter(word %in% positive | word %in% negative)
+tf_top_df <- data.frame(table(tf_bot_df)) %>% filter(tf_bot_df %in% positive | tf_bot_df %in% negative)
+names(tf_top_df)[1] <- 'word'
+head(tf_top_df)
+tf_bot <- length(tf_bot_df[,1])
+
+tf_top <- c()
+for(table_word in table_em$word){
+  tf_top_list <- subset(tf_top_df, word==table_word)[2]
+  tf_top <- c(tf_top, tf_top_list[,1])
+}
+
+tf <- tf_top / tf_bot
+#tf_idf <- cbind(tf)
+
+#IDF : 문서 전체 개수 / 단어를 포함한 문서의 수
+idf <- c()
+idf_top <- col_cnt-1
+#text_all = text_pos + text_neg
+text_all <- list()
+for(i in 1:15){
+  text_all[[i]] <- data.frame()
+  if(length(text_pos[[i]][,1] > 0)){
+    text_all[[i]] <- rbind(text_all[[i]], text_pos[[i]])
+  }
+  if(length(text_neg[[i]][,1] > 0)){
+    text_all[[i]] <- rbind(text_all[[i]], text_neg[[i]])
+  }
+  names(text_all[[i]]) <- c('word', 'Freq')
+}
+
+idf_bot <- c()
+for(table_word in table_em$word){
+  word_cnt <- 0
+  for(i in 1:15){
+    if(length(subset(text_all[[i]], word==table_word)[,1]) > 0){
+      word_cnt <- word_cnt + 1
+    }
+  }
+  idf_bot <- c(idf_bot, word_cnt)
+}
+idf <- idf_top / idf_bot
+idf <- log(idf)
+tf_idf <- tf * idf
+
+
 
 
 #이데일리 종목 검색 결과
